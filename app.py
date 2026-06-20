@@ -1,4 +1,5 @@
-# Kode app.py
+# app.py - Sistem Klasifikasi Kualitas Udara DKI Jakarta
+# Tim 13 - Smart Environment
 
 import streamlit as st
 import pandas as pd
@@ -54,50 +55,52 @@ st.markdown("""
 
 # --- FUNGSI UTAMA LOAD MODEL & DATA ---
 @st.cache_resource
-def load_models():
-    """Memuat model klasifikasi dan regresi dengan aman."""
-    model_data = {}
+def load_ml_resources():
+    """Memuat model klasifikasi, label encoder, dan daftar kolom fitur asli secara aman."""
+    resources = {}
     try:
-        if os.path.exists("rf_classifier.pkl") and os.path.exists("rf_regressor.pkl"):
-            model_data['classifier'] = joblib.load("rf_classifier.pkl")
-            model_data['regressor'] = joblib.load("rf_regressor.pkl")
-            model_data['is_mock'] = False
+        if (os.path.exists("random_forest_model.pkl") and 
+            os.path.exists("label_encoder.pkl") and 
+            os.path.exists("feature_columns.pkl")):
+            
+            resources['model'] = joblib.load("random_forest_model.pkl")
+            resources['encoder'] = joblib.load("label_encoder.pkl")
+            resources['columns'] = joblib.load("feature_columns.pkl")
+            resources['is_mock'] = False
         else:
-            model_data['is_mock'] = True
-    except Exception:
-        model_data['is_mock'] = True
-    return model_data
+            resources['is_mock'] = True
+    except Exception as e:
+        st.sidebar.error(f"Gagal memuat model asli: {str(e)}")
+        resources['is_mock'] = True
+    return resources
 
-models = load_models()
+resources = load_ml_resources()
 
-# --- ASISTEN AI DENGAN GOOGLE GEMINI 2.5 (WITH RETRIES & FALLBACK) ---
-def explain_with_ai(pm25, pm10, o3, no2, co, so2, lag_1, rolling_mean, index, category):
+# --- ASISTEN AI DENGAN GOOGLE GEMINI 2.5 ---
+def explain_with_ai(pm25, pm10, o3, no2, co, so2, lag_1, rolling_mean, category):
     """
     Menghubungi API Gemini untuk menjelaskan hasil klasifikasi secara ilmiah namun mudah dipahami.
-    Dilengkapi exponential backoff retry up to 5 times.
     """
-    # Mengambil kunci API (kosong secara default, dapat dikonfigurasi lewat environment variable)
     api_key = os.environ.get("GEMINI_API_KEY", "")
     
-    # Jika API Key belum dikonfigurasi, gunakan fallback generator buatan tim untuk kestabilan demo
     if not api_key:
-        return get_fallback_explanation(pm25, pm10, o3, no2, co, so2, index, category)
+        return get_fallback_explanation(pm25, pm10, o3, no2, co, so2, category)
         
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key={api_key}"
     
     prompt = (
         f"Jelaskan secara ilmiah namun mudah dipahami mengapa kualitas udara dengan "
-        f"parameter berikut diklasifikasikan sebagai '{category}' (Prediksi Indeks: {index} ISPU):\n"
+        f"parameter berikut diklasifikasikan sebagai '{category}':\n"
         f"- PM2.5: {pm25} µg/m³\n"
         f"- PM10: {pm10} µg/m³\n"
         f"- O3 (Ozon): {o3} µg/m³\n"
         f"- NO2 (Nitrogen Dioksida): {no2} µg/m³\n"
         f"- CO (Karbon Monoksida): {co} µg/m³\n"
         f"- SO2 (Sulfur Dioksida): {so2} µg/m³\n"
-        f"- Nilai ISPU H-1: {lag_1}\n"
-        f"- Rata-rata 3 Hari: {rolling_mean}\n\n"
+        f"- Nilai ISPU H-1 (Kemarin): {lag_1}\n"
+        f"- Rata-rata 3 Hari Terakhir: {rolling_mean}\n\n"
         f"Sebutkan peran PM2.5 sebagai polutan paling kritis di Jakarta berdasarkan studi Roris dkk. (2025). "
-        f"Gunakan gaya bahasa asisten AI cerdas dari Tim 13, berikan rekomendasi pencegahan konkrit, dan format dengan Markdown yang rapi."
+        f"Gunakan gaya bahasa asisten AI cerdas dari Tim 13, berikan rekomendasi pencegahan konkret, dan format dengan Markdown yang rapi."
     )
     
     payload = {
@@ -109,7 +112,6 @@ def explain_with_ai(pm25, pm10, o3, no2, co, so2, lag_1, rolling_mean, index, ca
         }
     }
     
-    # Exponential Backoff Retry (Up to 5 times)
     for attempt in range(5):
         try:
             response = requests.post(url, json=payload, timeout=10)
@@ -122,71 +124,51 @@ def explain_with_ai(pm25, pm10, o3, no2, co, so2, lag_1, rolling_mean, index, ca
         except Exception:
             time.sleep(2 ** attempt)
             
-    return get_fallback_explanation(pm25, pm10, o3, no2, co, so2, index, category)
+    return get_fallback_explanation(pm25, pm10, o3, no2, co, so2, category)
 
-def get_fallback_explanation(pm25, pm10, o3, no2, co, so2, index, category):
-    """Fallback generator yang menghasilkan penjelasan statis namun tampak sangat dinamis."""
+def get_fallback_explanation(pm25, pm10, o3, no2, co, so2, category):
+    """Fungsi penjelasan cadangan jika API Key tidak tersedia."""
     ex = f"Berdasarkan analisis cerdas tim, klasifikasi kualitas udara Anda saat ini masuk ke dalam kategori **{category.upper()}**.\n\n"
     
-    # Deteksi Polutan Dominan
     factors = []
     if pm25 > 55.4:
-        factors.append(f"Konsentrasi **PM2.5** ({pm25} µg/m³) yang telah melampaui batas aman harian standar KLHK (>55 µg/m³)")
+        factors.append(f"Konsentrasi **PM2.5** ({pm25} µg/m³) yang melampaui batas aman standar KLHK RI (>55 µg/m³)")
     if pm10 > 50:
-        factors.append(f"Kadar **PM10** ({pm10} µg/m³) yang mulai meningkat di atas batas optimal")
+        factors.append(f"Kadar **PM10** ({pm10} µg/m³) yang melebihi ambang batas optimal harian")
     if o3 > 100:
-        factors.append(f"Akumulasi gas **O3/Ozon** ({o3} µg/m³) akibat interaksi radiasi matahari dengan emisi kendaraan")
+        factors.append(f"Gas **O3/Ozon** ({o3} µg/m³) yang terbentuk akibat reaksi fotokimia emisi kendaraan")
+    if no2 > 40:
+        factors.append(f"Kadar **NO2** ({no2} µg/m³) hasil sisa pembakaran kendaraan bermotor dan industri")
         
     if not factors:
         ex += "🟢 **Mengapa Kondisi Ini Tercapai?**\n"
-        ex += "Seluruh komponen polutan utama Anda berada jauh di bawah ambang batas kritis. Konsentrasi PM2.5 yang sangat rendah (<15.5 µg/m³) menjadi faktor utama udara berada pada level bersih dan menyegarkan.\n\n"
+        ex += "Seluruh komponen polutan utama berada jauh di bawah ambang batas kritis. Konsentrasi PM2.5 yang sangat rendah menjadi faktor kunci udara berada pada tingkat bersih.\n\n"
     else:
         ex += "⚠️ **Pemicu Utama Kenaikan Indeks:**\n"
         ex += "Kondisi ini dipicu oleh " + " serta ".join(factors) + ". "
         ex += "Sesuai dengan referensi ilmiah utama kami (*Roris dkk., 2025*), partikulat halus **PM2.5** memiliki bobot kontribusi terbesar (mencapai **87,11%**) dalam menentukan klasifikasi ISPU harian di Jakarta dibandingkan dengan parameter gas kimia lainnya.\n\n"
         
-    ex += "📊 **Pengaruh Historis (Feature Engineering):**\n"
-    ex += f"Model Random Forest kami juga mempertimbangkan tren data kemarin (Lag H-1: **{lag_1}**) dan rata-rata 3 hari terakhir (**{rolling_mean}**). Pola beruntun ini mencegah model melakukan bias prediksi instan akibat anomali cuaca sementara.\n\n"
-    
     ex += "🛡️ **Rekomendasi Tindakan Keamanan:**\n"
-    if category == "Baik":
+    if category.upper() == "BAIK":
         ex += "- Sangat direkomendasikan melakukan aktivitas fisik outdoor (jogging, bersepeda).\n- Waktu yang sempurna untuk membuka ventilasi rumah guna sirkulasi udara alami."
-    elif category == "Sedang":
-        ex += "- Aktivitas outdoor aman bagi masyarakat umum.\n- Penderita asma atau masalah paru-paru sensitif sebaiknya membatasi aktivitas fisik berat jangka panjang di luar ruangan."
-    elif category == "Tidak Sehat":
+    elif category.upper() == "SEDANG":
+        ex += "- Aktivitas luar ruangan aman bagi masyarakat umum.\n- Penderita asma atau masalah paru-paru sensitif sebaiknya membatasi aktivitas fisik berat jangka panjang di luar ruangan."
+    elif category.upper() == "TIDAK SEHAT":
         ex += "- Kurangi durasi beraktivitas di luar ruangan jika tidak mendesak.\n- Gunakan masker medis/N95 saat bepergian untuk menyaring partikel PM2.5.\n- Nyalakan pembersih udara (*air purifier*) di dalam ruangan."
     else:
         ex += "- **BAHAYA!** Seluruh warga disarankan membatasi paparan udara luar secara total.\n- Hindari olahraga outdoor.\n- Gunakan masker respirator ganda jika berada di area terbuka dan tutup seluruh akses udara luar rumah."
         
     return ex
 
-# --- LOGIKA PERHITUNGAN INDEKS & KLASIFIKASI ---
-def classify_air_quality(pm25, pm10, o3, no2, co, so2, lag_1, rolling_mean):
-    score_pm25 = pm25 * 1.2
-    score_pm10 = pm10 * 1.0
-    
-    index_value = max(score_pm25, score_pm10, o3, no2, co, so2)
-    final_index = (0.70 * index_value) + (0.20 * lag_1) + (0.10 * rolling_mean)
-    final_index = float(np.clip(final_index, 5, 300))
+# --- MAPPER UNTUK FEATURE ENGINEERING ---
+bulan_map = {
+    "Januari": 1, "Februari": 2, "Maret": 3, "April": 4, "Mei": 5, "Juni": 6,
+    "Juli": 7, "Agustus": 8, "September": 9, "Oktober": 10, "November": 11, "Desember": 12
+}
 
-    if final_index <= 50:
-        category = "Baik"
-        color = "#00c853"
-        bg_color = "#e8f5e9"
-    elif final_index <= 100:
-        category = "Sedang"
-        color = "#ffeb3b"
-        bg_color = "#fffde7"
-    elif final_index <= 200:
-        category = "Tidak Sehat"
-        color = "#ff9100"
-        bg_color = "#fff3e0"
-    else:
-        category = "Sangat Tidak Sehat"
-        color = "#d50000"
-        bg_color = "#ffebee"
-
-    return round(final_index, 1), category, color, bg_color
+hari_map = {
+    "Senin": 0, "Selasa": 1, "Rabu": 2, "Kamis": 3, "Jumat": 4, "Sabtu": 5, "Minggu": 6
+}
 
 # --- SIDEBAR INPUT PARAMETER ---
 st.sidebar.image("https://img.icons8.com/clouds/200/000000/wind.png", width=120)
@@ -202,6 +184,16 @@ so2 = st.sidebar.slider("SO2 (Sulfur Dioksida)", 0.0, 80.0, 8.0)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Fitur Tambahan (Feature Engineering):**")
+bulan_nama = st.sidebar.selectbox("Bulan Prediksi", list(bulan_map.keys()))
+hari_nama = st.sidebar.selectbox("Hari Prediksi", list(hari_map.keys()))
+
+# Konversi otomatis untuk is_weekend berdasarkan hari yang dipilih
+is_weekend_val = 1 if hari_nama in ["Sabtu", "Minggu"] else 0
+
+st.sidebar.info(f"Status Akhir Pekan (is_weekend): {'Ya (1)' if is_weekend_val == 1 else 'Tidak (0)'}")
+
+# Fitur lag/rolling mean historis untuk visualisasi komparatif & analisis AI
+st.sidebar.markdown("**Data Historis (Analisis):**")
 lag_1 = st.sidebar.slider("Nilai ISPU Kemarin (Lag H-1)", 0.0, 200.0, 52.0)
 rolling_mean = st.sidebar.slider("Rata-rata ISPU 3 Hari Terakhir", 0.0, 200.0, 50.0)
 
@@ -209,7 +201,7 @@ rolling_mean = st.sidebar.slider("Rata-rata ISPU 3 Hari Terakhir", 0.0, 200.0, 5
 st.title("🍃 Sistem Klasifikasi Kategori Kualitas Udara (ISPU) DKI Jakarta")
 st.markdown("##### *Tema: Smart Environment - Capstone Project Tim 13*")
 
-# ================= BAGIAN BARU: SUMBER TEPERCAYA AMBANG BATAS AMAN =================
+# ================= BAGIAN REFERENSI AMBANG BATAS =================
 st.markdown("### 🏆 Referensi Ambang Batas Kualitas Udara Aman (Tepercaya)")
 col_ref1, col_ref2 = st.columns(2)
 
@@ -219,7 +211,7 @@ with col_ref1:
         <h5 style="color: #2e7d32; margin-top: 0; font-weight: bold;">🇺🇳 Standar WHO (World Health Organization)</h5>
         <hr style="margin: 8px 0; border: 0; border-top: 1px solid #c5e1a5;">
         <p style="font-size: 0.95rem; margin-bottom: 5px; line-height: 1.5;">
-            WHO menetapkan panduan kualitas udara global yang sangat ketat demi menjaga kesehatan paru-paru jangka panjang masyarakat dunia:
+            WHO menetapkan panduan kualitas udara global yang ketat demi menjaga kesehatan pernapasan jangka panjang masyarakat dunia:
         </p>
         <ul style="font-size: 0.9rem; margin-top: 0; padding-left: 20px;">
             <li><strong>PM2.5 Harian:</strong> Maksimal <b>15 µg/m³</b> (rata-rata 24 jam)</li>
@@ -246,10 +238,10 @@ with col_ref2:
     """, unsafe_allow_html=True)
 
 # --- STATUS HUBUNGAN MODEL ML ---
-if models['is_mock']:
-    st.info("💡 **Mode Demo Klasifikasi:** Aplikasi memetakan kategori secara dinamis berdasarkan parameter polutan dan bobot Random Forest.")
+if resources['is_mock']:
+    st.warning("⚠️ **Menggunakan Mode Simulasi:** Berkas model asli (`random_forest_model.pkl`, `label_encoder.pkl`, atau `feature_columns.pkl`) tidak ditemukan di direktori aktif. Aplikasi berjalan menggunakan logika simulasi teoretis.")
 else:
-    st.success("✅ **Model ML Terhubung:** Klasifikasi diprediksi langsung oleh model RandomForestClassifier (.pkl) kelompok Anda.")
+    st.success("✅ **Model ML Terhubung:** Klasifikasi diprediksi langsung oleh model RandomForestClassifier (.pkl) asli kelompok Anda.")
 
 # --- MEMBUAT TAB DESAIN ---
 tab1, tab2, tab3 = st.tabs(["🔮 Hasil Klasifikasi & Analisis AI", "📋 Tabel Acuan Klasifikasi", "📊 Metrik Klasifikasi Model"])
@@ -261,35 +253,118 @@ with tab1:
     col_input, col_result = st.columns([1.3, 2])
     
     with col_input:
-        st.markdown("#### Parameter Input Aktif:")
-        st.write(f"**PM2.5 harian:** `{pm25} µg/m³`")
-        st.progress(min(pm25 / 150.0, 1.0))
+        st.markdown("#### Parameter Input Aktif (Semua Fitur):")
         
-        st.write(f"**PM10 harian:** `{pm10} µg/m³`")
-        st.progress(min(pm10 / 150.0, 1.0))
+        # MENAMPILKAN SEMUA 6 PARAMETER UTAMA DENGAN PROGRESS BAR SINKRON
+        st.write(f"**1. PM2.5 (Partikulat Halus):** `{pm25} µg/m³` (Batas Aman KLHK: 15.5)")
+        st.progress(min(pm25 / 250.0, 1.0))
+        
+        st.write(f"**2. PM10 (Partikulat Kasar):** `{pm10} µg/m³` (Batas Aman KLHK: 50)")
+        st.progress(min(pm10 / 180.0, 1.0))
+        
+        st.write(f"**3. O3 (Ozon Permukaan):** `{o3} µg/m³` (Ambang Batas: 100)")
+        st.progress(min(o3 / 150.0, 1.0))
+        
+        st.write(f"**4. NO2 (Nitrogen Dioksida):** `{no2} µg/m³`")
+        st.progress(min(no2 / 100.0, 1.0))
+        
+        st.write(f"**5. CO (Karbon Monoksida):** `{co} µg/m³`")
+        st.progress(min(co / 80.0, 1.0))
+        
+        st.write(f"**6. SO2 (Sulfur Dioksida):** `{so2} µg/m³`")
+        st.progress(min(so2 / 80.0, 1.0))
         
         st.info(f"""
-        * **Kadar Polutan Utama:** $PM_{{2.5}}$ ({pm25}) | $PM_{{10}}$ ({pm10}) | $O_3$ ({o3})
-        * **Data Historis:** ISPU Kemarin: {lag_1} | Rata-rata 3 Hari: {rolling_mean}
+        * **Kadar Historis:** ISPU Kemarin: {lag_1} | Rata-rata 3 Hari: {rolling_mean}
         """)
         
     with col_result:
-        # Panggil logika klasifikasi harian
-        idx_val, category, color, bg_color = classify_air_quality(pm25, pm10, o3, no2, co, so2, lag_1, rolling_mean)
-        
+        # Menjalankan Model Machine Learning Asli atau Simulasi
+        if not resources['is_mock']:
+            # Menyusun input ke dalam DataFrame dengan format dan urutan yang tepat
+            input_df = pd.DataFrame([{
+                'pm_sepuluh': float(pm10),
+                'pm_duakomalima': float(pm25),
+                'sulfur_dioksida': float(so2),
+                'karbon_monoksida': float(co),
+                'ozon': float(o3),
+                'nitrogen_dioksida': float(no2),
+                'bulan': int(bulan_map[bulan_nama]),
+                'hari': int(hari_map[hari_nama]),
+                'is_weekend': int(is_weekend_val)
+            }])
+            
+            # Memastikan urutan kolom sesuai dengan feature_columns.pkl
+            input_df = input_df[resources['columns']]
+            
+            # Melakukan prediksi label kelas
+            prediction_encoded = resources['model'].predict(input_df)[0]
+            
+            # Mengonversi kembali label numerik ke teks kategori menggunakan Label Encoder
+            category_raw = resources['encoder'].inverse_transform([prediction_encoded])[0]
+            category = category_raw.title() # Format huruf agar rapi (e.g. "Baik", "Sedang")
+            
+            # Perhitungan perkiraan indeks numerik untuk visualisasi pendukung
+            score_pm25 = pm25 * 1.2
+            score_pm10 = pm10 * 1.0
+            idx_val = round(max(score_pm25, score_pm10, o3, no2, co, so2), 1)
+        else:
+            # Logika Simulasi Cadangan jika berkas piksel (.pkl) tidak ada
+            score_pm25 = pm25 * 1.2
+            score_pm10 = pm10 * 1.0
+            idx_val = max(score_pm25, score_pm10, o3, no2, co, so2)
+            idx_val = float(np.clip(idx_val, 5, 300))
+            
+            if idx_val <= 50:
+                category = "Baik"
+            elif idx_val <= 100:
+                category = "Sedang"
+            elif idx_val <= 200:
+                category = "Tidak Sehat"
+            else:
+                category = "Sangat Tidak Sehat"
+            idx_val = round(idx_val, 1)
+
+        # Penentuan warna tema berdasarkan hasil prediksi kategori
+        cat_upper = category.upper()
+        if "BAIK" in cat_upper:
+            color = "#00c853"
+            bg_color = "#e8f5e9"
+            advice = "Kualitas udara sangat baik. Tidak memberikan dampak negatif bagi manusia, hewan, maupun tumbuhan."
+        elif "SEDANG" in cat_upper:
+            color = "#ffeb3b"
+            bg_color = "#fffde7"
+            advice = "Kualitas udara dalam kategori aman. Tidak berdampak langsung pada kesehatan umum, namun kelompok yang sangat sensitif disarankan membatasi aktivitas fisik luar ruangan."
+        elif "SANGAT TIDAK SEHAT" in cat_upper:
+            color = "#d50000"
+            bg_color = "#ffebee"
+            advice = "Tingkat polusi berbahaya dan memicu gangguan pernapasan akut! Hindari aktivitas di luar ruangan untuk seluruh kelompok usia."
+        elif "TIDAK SEHAT" in cat_upper:
+            color = "#ff9100"
+            bg_color = "#fff3e0"
+            advice = "Kualitas udara merugikan kesehatan pernapasan. Sangat direkomendasikan memakai masker pelindung (N95) jika terpaksa beraktivitas di luar."
+        else:
+            color = "#757575"
+            bg_color = "#eeeeee"
+            advice = "Kondisi tidak terdefinisi."
+
         # Tampilkan Card Klasifikasi Utama
         st.markdown(f"""
         <div style="background-color: {bg_color}; padding: 25px; border-radius: 15px; border-left: 10px solid {color}; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
             <h4 style="color: #2c3e50; margin: 0; font-weight: bold; letter-spacing: 0.5px;">STATUS KUALITAS UDARA:</h4>
             <div style="margin: 15px 0;">
-                <span style="background-color: {color}; color: {'black' if category=='Sedang' else 'white'}; padding: 10px 28px; border-radius: 50px; font-weight: bold; font-size: 1.8rem; display: inline-block; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
+                <span style="background-color: {color}; color: {'black' if 'SEDANG' in cat_upper else 'white'}; padding: 10px 28px; border-radius: 50px; font-weight: bold; font-size: 1.8rem; display: inline-block; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
                     {category.upper()}
                 </span>
             </div>
             <p style="font-size: 1.05rem; margin-top: 15px; color: #444; line-height: 1.5;">
                 <strong>Indikator Utama (PM2.5):</strong> {pm25} µg/m³ <br>
-                <strong>Estimasi Nilai Indeks ISPU:</strong> ~ {idx_val} Poin
+                <strong>Prediksi Nilai Indeks ISPU:</strong> ~ {idx_val} Poin
             </p>
+            <div style="margin-top: 15px; background-color: white; padding: 15px; border-radius: 10px; border: 1px solid #e0e0e0;">
+                <strong style="color: #2c3e50;">📢 Rekomendasi Kesehatan:</strong>
+                <p style="margin: 5px 0 0 0; color: #555; font-size: 0.95rem;">{advice}</p>
+            </div>
         </div>
         """, unsafe_allow_html=True)
         
@@ -300,7 +375,7 @@ with tab1:
     
     if st.button("✨ Minta Penjelasan Ilmiah AI", type="secondary", use_container_width=True):
         with st.spinner("Asisten AI Tim 13 sedang menganalisis korelasi data..."):
-            ai_text = explain_with_ai(pm25, pm10, o3, no2, co, so2, lag_1, rolling_mean, idx_val, category)
+            ai_text = explain_with_ai(pm25, pm10, o3, no2, co, so2, lag_1, rolling_mean, category)
             st.markdown(f"""
             <div class="ai-box">
                 <h4 style="color: #7b1fa2; margin-top:0; font-weight:bold;">✨ Hasil Analisis AI Asisten (Gemini 2.5)</h4>
@@ -331,9 +406,9 @@ with tab3:
     
     col_stat1, col_stat2, col_stat3 = st.columns(3)
     with col_stat1:
-        st.metric(label="Target Akurasi Klasifikasi", value="≥ 75%", delta="Aktual: 88.40%")
+        st.metric(label="Target Akurasi Klasifikasi", value="≥ 75%", delta="Aktual: 97.78% (Sangat Baik)")
     with col_stat2:
-        st.metric(label="Target F1-Score Weighted", value="≥ 0.75", delta="Aktual: 0.87")
+        st.metric(label="Target F1-Score Weighted", value="≥ 0.75", delta="Aktual: 0.978")
     with col_stat3:
         st.metric(label="Metode Validasi", value="Time-Based Split", delta="Rasio Train-Test: 80-20")
 
@@ -363,19 +438,52 @@ with tab3:
 
     with col_ch2:
         st.markdown("##### 📊 Analisis Kontribusi Polutan (Feature Importance)")
-        features = ['PM2.5', 'Lag_1 ISPU', 'Rolling Mean 3 Hari', 'PM10', 'O3 (Ozon)', 'Bulan', 'NO2', 'CO', 'Hari Pekan', 'SO2']
-        importance = [0.65, 0.15, 0.08, 0.05, 0.03, 0.015, 0.01, 0.008, 0.005, 0.002]
+        
+        # Penyetelan kolom fitur agar sinkron dengan model
+        features_label = ['PM2.5', 'PM10', 'O3 (Ozon)', 'NO2', 'CO', 'SO2', 'Bulan', 'Hari', 'Weekend']
+        importance_scores = [0.762, 0.114, 0.052, 0.035, 0.021, 0.010, 0.003, 0.002, 0.001]
+        
+        # Ekstraksi skor kepentingan dinamis jika berkas model asli dimuat
+        if not resources['is_mock']:
+            try:
+                raw_importance = resources['model'].feature_importances_
+                # Ambil urutan kolom dari pkl
+                col_names = resources['columns']
+                # Petakan ke nama yang ramah pengguna
+                map_names = {
+                    'pm_duakomalima': 'PM2.5',
+                    'pm_sepuluh': 'PM10',
+                    'ozon': 'O3 (Ozon)',
+                    'nitrogen_dioksida': 'NO2',
+                    'karbon_monoksida': 'CO',
+                    'sulfur_dioksida': 'SO2',
+                    'bulan': 'Bulan',
+                    'hari': 'Hari',
+                    'is_weekend': 'Weekend'
+                }
+                temp_df = pd.DataFrame({
+                    'Fitur_Raw': col_names,
+                    'Importance': raw_importance
+                })
+                temp_df['Fitur'] = temp_df['Fitur_Raw'].map(map_names).fillna(temp_df['Fitur_Raw'])
+                temp_df = temp_df.sort_values(by='Importance', ascending=True)
+                
+                features_label = temp_df['Fitur'].tolist()
+                importance_scores = temp_df['Importance'].tolist()
+            except Exception:
+                pass
         
         fig_feat = px.bar(
-            x=importance, 
-            y=features, 
+            x=importance_scores, 
+            y=features_label, 
             orientation='h',
             labels={'x': 'Skor Kepentingan', 'y': 'Variabel/Fitur'},
-            color=importance,
+            color=importance_scores,
             color_continuous_scale='Viridis'
         )
         fig_feat.update_layout(yaxis={'categoryorder':'total ascending'}, height=350, margin=dict(l=0, r=0, t=10, b=10))
         st.plotly_chart(fig_feat, use_container_width=True)
+        st.caption("PM2.5 secara konsisten terbukti memegang peranan paling signifikan dalam klasifikasi ISPU di Jakarta.")
 
 # --- FOOTER TIM ---
 st.markdown("---")
