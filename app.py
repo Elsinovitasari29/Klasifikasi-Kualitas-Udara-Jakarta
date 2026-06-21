@@ -8,6 +8,9 @@ import requests
 import time
 from datetime import date
 
+# ================= KONFIGURASI API KEY (LANGSUNG DI DALAM KODE) =================
+GEMINI_API_KEY = ""  # GANTI DENGAN API KEY ANDA
+
 # --- KONFIGURASI HALAMAN ---
 st.set_page_config(
     page_title="Sistem Klasifikasi Kualitas Udara - Tim 13",
@@ -73,12 +76,12 @@ def load_models():
 
 models = load_models()
 
-# --- PEMETAAN WARNA & BACKGROUND PER KATEGORI (case-insensitive) ---
+# --- PEMETAAN WARNA & BACKGROUND PER KATEGORI ---
 CATEGORY_STYLE = {
     "BAIK":                {"color": "#00c853", "bg": "#e8f5e9"},
-    "SEDANG":               {"color": "#ffeb3b", "bg": "#fffde7"},
-    "TIDAK SEHAT":          {"color": "#ff9100", "bg": "#fff3e0"},
-    "SANGAT TIDAK SEHAT":   {"color": "#d50000", "bg": "#ffebee"},
+    "SEDANG":              {"color": "#ffeb3b", "bg": "#fffde7"},
+    "TIDAK SEHAT":         {"color": "#ff9100", "bg": "#fff3e0"},
+    "SANGAT TIDAK SEHAT":  {"color": "#d50000", "bg": "#ffebee"},
 }
 
 NAMA_HARI = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
@@ -89,23 +92,49 @@ def get_style(category: str):
     key = category.strip().upper()
     return CATEGORY_STYLE.get(key, {"color": "#9e9e9e", "bg": "#f5f5f5"})
 
-# --- ANALISIS KONDISI KUALITAS UDARA HARI INI BERDASARKAN PARAMETER INPUT ---
+# --- FUNGSI HITUNG ISPU (HANYA UNTUK MODE MOCK) ---
+def hitung_ispu_dari_polutan(pm25, pm10, o3, no2, co, so2, is_weekend):
+    score_pm25 = pm25 * 1.2
+    score_pm10 = pm10 * 1.0
+    score_o3 = o3 * 0.8
+    score_no2 = no2 * 0.7
+    score_co = co * 0.6
+    score_so2 = so2 * 0.9
+    
+    index_value = max(score_pm25, score_pm10, score_o3, score_no2, score_co, score_so2)
+    penyesuaian = 0.95 if is_weekend else 1.0
+    
+    final_index = float(np.clip(index_value * penyesuaian, 5, 300))
+    return round(final_index, 1)
+
+# --- FUNGSI KLASIFIKASI MOCK (HANYA UNTUK MODE MOCK) ---
+def classify_air_quality_mock(pm25, pm10, o3, no2, co, so2, is_weekend):
+    index_value = hitung_ispu_dari_polutan(pm25, pm10, o3, no2, co, so2, is_weekend)
+    final_index = float(np.clip(index_value, 5, 300))
+
+    if final_index <= 50:
+        category = "Baik"
+    elif final_index <= 100:
+        category = "Sedang"
+    elif final_index <= 200:
+        category = "Tidak Sehat"
+    else:
+        category = "Sangat Tidak Sehat"
+
+    style = get_style(category)
+    return round(final_index, 1), category, style["color"], style["bg"]
+
+# --- ANALISIS KONDISI KUALITAS UDARA HARI INI ---
 def analisis_kondisi_harian(pm25, pm10, o3, no2, co, so2, tanggal_input, category):
-    """
-    Menyusun analisis naratif tentang kondisi kualitas udara pada hari yang diinput,
-    murni berdasarkan parameter polutan + konteks kalender (bulan, hari, weekday/weekend).
-    Tidak menggunakan data hari sebelumnya (tanpa lag/rolling features).
-    """
     hari_nama = NAMA_HARI[tanggal_input.weekday()]
     bulan_nama = NAMA_BULAN[tanggal_input.month - 1]
     is_weekend = tanggal_input.weekday() >= 5
 
-    # Identifikasi polutan dominan (paling mendekati/melewati ambang batas relatif)
     polutan_ref = {
-        "PM2.5": (pm25, 55.4),
-        "PM10": (pm10, 150.4),
+        "PM2.5": (pm25, 25.0),
+        "PM10": (pm10, 45.0),
         "O3 (Ozon)": (o3, 100.0),
-        "NO2": (no2, 100.0),
+        "NO2": (no2, 25.0),
         "CO": (co, 30.0),
         "SO2": (so2, 80.0),
     }
@@ -115,7 +144,6 @@ def analisis_kondisi_harian(pm25, pm10, o3, no2, co, so2, tanggal_input, categor
 
     poin = []
 
-    # Konteks kalender
     if is_weekend:
         poin.append(
             f"Pemantauan dilakukan pada hari **{hari_nama}** ({tanggal_input.strftime('%d %B %Y')}), "
@@ -135,22 +163,20 @@ def analisis_kondisi_harian(pm25, pm10, o3, no2, co, so2, tanggal_input, categor
         f"cenderung meningkatkan konsentrasi PM2.5 dan PM10 di udara)."
     )
 
-    # Polutan dominan
     if rasio_dominan >= 1.0:
         poin.append(
             f"Parameter paling kritis hari ini adalah **{polutan_dominan}**, yang telah **melampaui** "
-            f"ambang batas referensinya (rasio {rasio_dominan:.2f}x). Polutan ini menjadi kontributor utama "
+            f"ambang batas WHO (rasio {rasio_dominan:.2f}x). Polutan ini menjadi kontributor utama "
             f"terhadap status kualitas udara saat ini."
         )
     else:
         poin.append(
-            f"Parameter paling mendekati ambang batas adalah **{polutan_dominan}** "
+            f"Parameter paling mendekati ambang batas WHO adalah **{polutan_dominan}** "
             f"(berada pada {rasio_dominan*100:.0f}% dari batas referensinya), namun secara umum "
             f"seluruh parameter masih dalam rentang yang terkendali."
         )
 
-    # Catatan PM2.5 vs PM10
-    if pm25 > pm10 * 0.6:
+    if pm25 > pm10 * 0.6 and pm10 > 0:
         poin.append(
             "Rasio PM2.5 terhadap PM10 cukup tinggi, mengindikasikan dominasi partikel halus "
             "yang umumnya berasal dari pembakaran (kendaraan bermotor, industri) dan lebih berisiko "
@@ -168,19 +194,12 @@ def analisis_kondisi_harian(pm25, pm10, o3, no2, co, so2, tanggal_input, categor
         "style": style,
     }
 
-# --- ASISTEN AI DENGAN GOOGLE GEMINI 2.5 (WITH RETRIES & FALLBACK) ---
+# --- ASISTEN AI DENGAN GOOGLE GEMINI 2.5 ---
 def explain_with_ai(pm25, pm10, o3, no2, co, so2, tanggal_input, category):
-    """
-    Menghubungi API Gemini untuk menjelaskan hasil klasifikasi secara ilmiah namun mudah dipahami,
-    berbasis kondisi parameter HARI INI (tanpa data historis H-1).
-    Dilengkapi exponential backoff retry up to 5 times.
-    """
-    api_key = os.environ.get("GEMINI_API_KEY", "")
-
-    if not api_key:
+    if not GEMINI_API_KEY:
         return get_fallback_explanation(pm25, pm10, o3, no2, co, so2, tanggal_input, category)
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key={api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key={GEMINI_API_KEY}"
 
     hari_nama = NAMA_HARI[tanggal_input.weekday()]
     bulan_nama = NAMA_BULAN[tanggal_input.month - 1]
@@ -222,7 +241,6 @@ def explain_with_ai(pm25, pm10, o3, no2, co, so2, tanggal_input, category):
     return get_fallback_explanation(pm25, pm10, o3, no2, co, so2, tanggal_input, category)
 
 def get_fallback_explanation(pm25, pm10, o3, no2, co, so2, tanggal_input, category):
-    """Fallback generator yang menghasilkan penjelasan statis namun tampak sangat dinamis, berbasis kalender."""
     cat_upper = category.strip().upper()
     hari_nama = NAMA_HARI[tanggal_input.weekday()]
     bulan_nama = NAMA_BULAN[tanggal_input.month - 1]
@@ -232,20 +250,22 @@ def get_fallback_explanation(pm25, pm10, o3, no2, co, so2, tanggal_input, catego
     ex += f"klasifikasi kualitas udara saat ini masuk ke dalam kategori **{cat_upper}**.\n\n"
 
     factors = []
-    if pm25 > 55.4:
-        factors.append(f"Konsentrasi **PM2.5** ({pm25} µg/m³) yang telah melampaui batas aman harian standar KLHK (>55 µg/m³)")
-    if pm10 > 50:
-        factors.append(f"Kadar **PM10** ({pm10} µg/m³) yang mulai meningkat di atas batas optimal")
-    if o3 > 100:
+    if pm25 > 25.0:
+        factors.append(f"Konsentrasi **PM2.5** ({pm25} µg/m³) yang telah melampaui batas aman WHO (25 µg/m³)")
+    if pm10 > 45.0:
+        factors.append(f"Kadar **PM10** ({pm10} µg/m³) yang melampaui batas WHO (45 µg/m³)")
+    if o3 > 100.0:
         factors.append(f"Akumulasi gas **O3/Ozon** ({o3} µg/m³) akibat interaksi radiasi matahari dengan emisi kendaraan")
+    if no2 > 25.0:
+        factors.append(f"Kadar **NO2** ({no2} µg/m³) yang melampaui batas WHO (25 µg/m³)")
 
     if not factors:
         ex += "🟢 **Mengapa Kondisi Ini Tercapai?**\n"
-        ex += "Seluruh komponen polutan utama berada jauh di bawah ambang batas kritis. Konsentrasi PM2.5 yang sangat rendah (<15.5 µg/m³) menjadi faktor utama udara berada pada level bersih dan menyegarkan.\n\n"
+        ex += "Seluruh komponen polutan utama berada di bawah ambang batas WHO. Konsentrasi PM2.5 yang rendah menjadi faktor utama udara berada pada level bersih dan menyegarkan.\n\n"
     else:
         ex += "⚠️ **Pemicu Utama Kenaikan Indeks:**\n"
         ex += "Kondisi ini dipicu oleh " + " serta ".join(factors) + ". "
-        ex += "Partikulat halus **PM2.5** umumnya memiliki bobot kontribusi terbesar dalam menentukan klasifikasi ISPU harian di Jakarta dibandingkan dengan parameter gas kimia lainnya.\n\n"
+        ex += "Partikulat halus **PM2.5** umumnya memiliki bobot kontribusi terbesar dalam menentukan klasifikasi ISPU harian di Jakarta.\n\n"
 
     ex += "📅 **Konteks Kalender:**\n"
     if is_weekend:
@@ -265,29 +285,6 @@ def get_fallback_explanation(pm25, pm10, o3, no2, co, so2, tanggal_input, catego
 
     return ex
 
-# --- LOGIKA PERHITUNGAN INDEKS & KLASIFIKASI (MODE MOCK / FALLBACK, BERBASIS KALENDER) ---
-def classify_air_quality(pm25, pm10, o3, no2, co, so2, is_weekend):
-    score_pm25 = pm25 * 1.2
-    score_pm10 = pm10 * 1.0
-
-    # Tanpa lag/rolling: indeks murni dari nilai polutan hari ini,
-    # dengan sedikit penyesuaian berdasarkan konteks kalender (weekday/weekend)
-    index_value = max(score_pm25, score_pm10, o3, no2, co, so2)
-    penyesuaian_kalender = 0.95 if is_weekend else 1.0
-    final_index = float(np.clip(index_value * penyesuaian_kalender, 5, 300))
-
-    if final_index <= 50:
-        category = "Baik"
-    elif final_index <= 100:
-        category = "Sedang"
-    elif final_index <= 200:
-        category = "Tidak Sehat"
-    else:
-        category = "Sangat Tidak Sehat"
-
-    style = get_style(category)
-    return round(final_index, 1), category, style["color"], style["bg"]
-
 # --- SIDEBAR INPUT PARAMETER ---
 st.sidebar.image("https://img.icons8.com/clouds/200/000000/wind.png", width=120)
 st.sidebar.title("Parameter Input")
@@ -295,12 +292,12 @@ st.sidebar.markdown("Masukkan tanggal pemantauan & kadar konsentrasi polutan **h
 
 tanggal_input = st.sidebar.date_input("📅 Tanggal Pemantauan", value=date.today())
 
-pm25 = st.sidebar.slider("PM2.5 (Partikulat Halus 2.5 µm)", 0.0, 250.0, 48.5, help="Partikel paling kecil dan berbahaya bagi paru-paru.")
-pm10 = st.sidebar.slider("PM10 (Partikulat Kasar 10 µm)", 0.0, 180.0, 35.0)
-o3 = st.sidebar.slider("O3 (Ozon permukaan)", 0.0, 150.0, 28.0)
-no2 = st.sidebar.slider("NO2 (Nitrogen Dioksida)", 0.0, 100.0, 18.0)
-co = st.sidebar.slider("CO (Karbon Monoksida)", 0.0, 80.0, 12.0)
-so2 = st.sidebar.slider("SO2 (Sulfur Dioksida)", 0.0, 80.0, 8.0)
+pm25 = st.sidebar.slider("PM2.5 (Partikulat Halus 2.5 µm)", 0.0, 250.0, 48.5, help="WHO: 25 µg/m³ (24 jam)")
+pm10 = st.sidebar.slider("PM10 (Partikulat Kasar 10 µm)", 0.0, 180.0, 35.0, help="WHO: 45 µg/m³ (24 jam)")
+o3 = st.sidebar.slider("O3 (Ozon permukaan)", 0.0, 150.0, 28.0, help="WHO: 100 µg/m³ (8 jam)")
+no2 = st.sidebar.slider("NO2 (Nitrogen Dioksida)", 0.0, 100.0, 18.0, help="WHO: 25 µg/m³ (24 jam)")
+co = st.sidebar.slider("CO (Karbon Monoksida)", 0.0, 80.0, 12.0, help="WHO: 30 µg/m³ (24 jam)")
+so2 = st.sidebar.slider("SO2 (Sulfur Dioksida)", 0.0, 80.0, 8.0, help="WHO: 80 µg/m³ (24 jam)")
 
 st.sidebar.markdown("---")
 st.sidebar.caption(
@@ -327,9 +324,12 @@ with col_ref1:
             WHO menetapkan panduan kualitas udara global yang sangat ketat demi menjaga kesehatan paru-paru jangka panjang masyarakat dunia:
         </p>
         <ul style="font-size: 0.9rem; margin-top: 0; padding-left: 20px;">
-            <li><strong>PM2.5 Harian:</strong> Maksimal <b>15 µg/m³</b> (rata-rata 24 jam)</li>
-            <li><strong>PM10 Harian:</strong> Maksimal <b>45 µg/m³</b> (rata-rata 24 jam)</li>
-            <li>Jika kadar harian melebihi batas ini, risiko penyakit kardiovaskular dan pernapasan meningkat secara signifikan.</li>
+            <li><strong>PM2.5 Harian (WHO):</strong> Maksimal <b>25 µg/m³</b> (rata-rata 24 jam)</li>
+            <li><strong>PM10 Harian (WHO):</strong> Maksimal <b>45 µg/m³</b> (rata-rata 24 jam)</li>
+            <li><strong>O3 (WHO):</strong> Maksimal <b>100 µg/m³</b> (rata-rata 8 jam)</li>
+            <li><strong>NO2 (WHO):</strong> Maksimal <b>25 µg/m³</b> (rata-rata 24 jam)</li>
+            <li><strong>CO (WHO):</strong> Maksimal <b>30 µg/m³</b> (rata-rata 24 jam)</li>
+            <li><strong>SO2 (WHO):</strong> Maksimal <b>80 µg/m³</b> (rata-rata 24 jam)</li>
         </ul>
     </div>
     """, unsafe_allow_html=True)
@@ -359,7 +359,7 @@ else:
 # --- MEMBUAT TAB DESAIN ---
 tab1, tab2, tab3 = st.tabs(["🔮 Hasil Klasifikasi & Analisis Hari Ini", "📋 Tabel Acuan Klasifikasi", "📊 Metrik Klasifikasi Model"])
 
-# ================= TAB 1: HASIL KLASIFIKASI & ANALISIS KONDISI HARI INI =================
+# ================= TAB 1: HASIL KLASIFIKASI =================
 with tab1:
     st.markdown("### Simulasi Klasifikasi Kualitas Udara Hari Ini")
 
@@ -385,9 +385,7 @@ with tab1:
 
     with col_result:
         if not models['is_mock']:
-            # --- Fitur sesuai feature_columns.pkl yang asli (berbasis kalender, tanpa lag) ---
-            # pm_sepuluh, pm_duakomalima, sulfur_dioksida, karbon_monoksida, ozon,
-            # nitrogen_dioksida, bulan, hari, is_weekend
+            # --- Fitur sesuai feature_columns.pkl ---
             fitur_tersedia = {
                 "pm_sepuluh": pm10,
                 "pm_duakomalima": pm25,
@@ -403,20 +401,21 @@ with tab1:
             feature_columns = models['feature_columns']
             input_df = pd.DataFrame([[fitur_tersedia[col] for col in feature_columns]], columns=feature_columns)
 
+            # PREDIKSI KATEGORI DARI MODEL
             prediction = models['classifier'].predict(input_df)[0]
             category = models['label_encoder'].inverse_transform([prediction])[0]
 
             style = get_style(category)
             color, bg_color = style["color"], style["bg"]
-            idx_val = round(pm25, 1)  # indikator PM2.5 sebagai proxy tampilan
         else:
-            idx_val, category, color, bg_color = classify_air_quality(
+            # Mode mock: pakai hitungan ISPU
+            ispu_value, category, color, bg_color = classify_air_quality_mock(
                 pm25, pm10, o3, no2, co, so2, bool(is_weekend_val)
             )
 
         text_color = "black" if category.strip().upper() == "SEDANG" else "white"
 
-        # Tampilkan Card Klasifikasi Utama
+        # Tampilkan Card Klasifikasi Utama (TANPA NILAI ISPU)
         st.markdown(f"""
         <div style="background-color: {bg_color}; padding: 25px; border-radius: 15px; border-left: 10px solid {color}; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
             <h4 style="color: #2c3e50; margin: 0; font-weight: bold; letter-spacing: 0.5px;">STATUS KUALITAS UDARA HARI INI:</h4>
@@ -427,13 +426,12 @@ with tab1:
             </div>
             <p style="font-size: 1.05rem; margin-top: 15px; color: #444; line-height: 1.5;">
                 <strong>Indikator Utama (PM2.5):</strong> {pm25} µg/m³ <br>
-                <strong>Estimasi Nilai Indeks ISPU:</strong> ~ {idx_val} Poin <br>
                 <strong>Tanggal:</strong> {tanggal_input.strftime('%d %B %Y')} ({NAMA_HARI[tanggal_input.weekday()]})
             </p>
         </div>
         """, unsafe_allow_html=True)
 
-    # ================= ANALISIS KONDISI KUALITAS UDARA HARI INI =================
+    # ================= ANALISIS KONDISI KUALITAS UDARA =================
     st.markdown("---")
     st.markdown("### 🔬 Analisis Kondisi Kualitas Udara Hari Ini")
     st.markdown("Analisis berikut disusun otomatis dari parameter polutan dan konteks kalender yang Anda input (bukan dari data historis):")
@@ -449,21 +447,21 @@ with tab1:
 
     with col_a2:
         st.metric("Polutan Paling Kritis", hasil_analisis["polutan_dominan"],
-                   f"{hasil_analisis['rasio_dominan']*100:.0f}% dari ambang batas")
+                   f"{hasil_analisis['rasio_dominan']*100:.0f}% dari ambang batas WHO")
         st.metric("Hari & Status", hasil_analisis["hari_nama"],
                    "Akhir Pekan" if hasil_analisis["is_weekend"] else "Hari Kerja")
         st.metric("Bulan Pemantauan", hasil_analisis["bulan_nama"])
 
-    # Perbandingan parameter terhadap ambang batas dalam bentuk tabel
-    st.markdown("#### 📐 Perbandingan Parameter terhadap Ambang Batas")
+    # ================= PERBANDINGAN PARAMETER TERHADAP AMBANG BATAS WHO =================
+    st.markdown("#### 📐 Perbandingan Parameter terhadap Ambang Batas WHO")
     perbandingan_df = pd.DataFrame({
         "Parameter": ["PM2.5", "PM10", "O3", "NO2", "CO", "SO2"],
         "Nilai Input": [pm25, pm10, o3, no2, co, so2],
-        "Ambang Batas Referensi": [55.4, 150.4, 100.0, 100.0, 30.0, 80.0],
+        "Batas WHO": [25.0, 45.0, 100.0, 25.0, 30.0, 80.0],
     })
     perbandingan_df["Status"] = np.where(
-        perbandingan_df["Nilai Input"] > perbandingan_df["Ambang Batas Referensi"],
-        "⚠️ Melebihi Batas", "✅ Aman"
+        perbandingan_df["Nilai Input"] > perbandingan_df["Batas WHO"],
+        "⚠️ Melebihi Batas WHO", "✅ Aman (WHO)"
     )
     st.dataframe(perbandingan_df, use_container_width=True, hide_index=True)
 
